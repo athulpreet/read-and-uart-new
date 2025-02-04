@@ -1,0 +1,121 @@
+#define F_CPU 16000000UL
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <stdio.h>
+#include <util/delay.h>
+
+volatile uint16_t last_capture = 0;
+volatile uint16_t period = 0;
+volatile uint8_t new_capture = 0;
+volatile uint16_t frequency = 0;
+
+// UART initialization
+void uart_init() {
+    // For 9600 baud rate with 16MHz clock
+    uint16_t ubrr = 103;
+    
+    // Set baud rate
+    UBRR0H = (unsigned char)(ubrr>>8);
+    UBRR0L = (unsigned char)ubrr;
+    
+    // Enable receiver and transmitter
+    UCSR0B = (1<<RXEN0)|(1<<TXEN0);
+    
+    // Set frame format: 8data, 1stop bit, Async operation
+    UCSR0C = (1<<URSEL0)|      // Select UCSR0C register
+             (0<<UMSEL0)|      // Asynchronous operation
+             (0<<UPM01)|       // No parity
+             (0<<UPM00)|
+             (0<<USBS0)|       // 1 stop bit
+             (3<<UCSZ00);      // 8 data bits
+}
+
+// Send a single character via UART
+void uart_transmit(unsigned char data) {
+    // Wait for empty transmit buffer
+    while (!(UCSR0A & (1<<UDRE0)));
+    
+    // Put data into buffer
+    UDR0 = data;
+    
+    // Wait for transmission complete
+    while (!(UCSR0A & (1<<TXC0)));
+    
+    // Clear transmission complete flag
+    UCSR0A |= (1<<TXC0);
+}
+
+// Send string via UART
+void uart_string(char *str) {
+    while(*str) {
+        uart_transmit(*str);
+        str++;
+    }
+}
+
+ISR(TIMER1_CAPT_vect) 
+{
+    uint16_t current_capture = ICR1;
+    
+    // Calculate period
+    if (current_capture >= last_capture) {
+        period = current_capture - last_capture;
+    } else {
+        // Timer overflow occurred
+        period = (0xFFFF - last_capture) + current_capture;
+    }
+    
+    last_capture = current_capture;
+    new_capture = 1;
+    
+    // Calculate frequency
+    // frequency = F_CPU/(prescaler * period)
+    if(period != 0) {
+        frequency = F_CPU/(8UL * period);
+    }
+}
+
+int main(void) 
+{
+    char buffer[50];  // Buffer for string formatting
+    
+    // Initialize UART
+    uart_init();
+    
+    // Configure Timer1 for Input Capture
+    TCCR1A = 0;  // Normal mode
+    TCCR1B = (1 << ICNC1) |    // Enable noise canceler
+             (1 << ICES1) |     // Capture on rising edge
+             (1 << CS11);       // Prescaler = 8
+             
+    // Clear Timer1
+    TCNT1 = 0;
+    
+    // Configure ICP1 (PE0) as input with pull-up
+    DDRE &= ~(1 << PE0);       // Set as input
+    PORTE |= (1 << PE0);       // Enable pull-up
+    
+    // Enable input capture interrupt
+    TIMSK |= (1 << TICIE1);
+    
+    // Enable global interrupts
+    sei();
+
+    // Initial message
+    uart_string("Input Capture Frequency Measurement\r\n");
+
+    while(1) 
+    {
+        if(new_capture)
+        {
+            // Format and send frequency over UART
+            sprintf(buffer, "Frequency: %u Hz\r\n", frequency);
+            uart_string(buffer);
+            
+            new_capture = 0;
+            _delay_ms(500);  // Update every 500ms to make it readable
+        }
+    }
+    
+    return 0;
+}
